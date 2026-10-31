@@ -143,6 +143,26 @@ dialog{background:var(--panel);color:var(--text);border:1px solid var(--line);bo
 dialog::backdrop{background:rgba(0,0,0,.55)}
 .toast{position:fixed;bottom:18px;left:50%;transform:translateX(-50%);background:var(--accent);color:#04210f;padding:10px 18px;border-radius:12px;font-weight:700;z-index:50;box-shadow:var(--shadow)}
 @media (max-width:600px){.sbscore{font-size:34px}.sbteam{font-size:15px}.sbteam img{width:40px;height:40px}.lineups{grid-template-columns:1fr}}
+
+/* لوحة السجل الجانبية */
+.sheet-bg{position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:40}
+.sheet{position:fixed;top:0;bottom:0;inset-inline-end:0;width:min(800px,100%);background:var(--bg);z-index:41;display:flex;flex-direction:column;box-shadow:0 0 40px rgba(0,0,0,.5);border-inline-start:1px solid var(--line);animation:sheetin .2s ease}
+@keyframes sheetin{from{opacity:0}}
+.sheet-head{display:flex;align-items:center;gap:8px;padding:12px 16px;border-bottom:1px solid var(--line);background:var(--panel)}
+.sheet-head h2{margin:0;font-size:18px;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sheet-body{overflow-y:auto;padding:14px 16px 40px;flex:1}
+.lnk{background:none;border:0;padding:0;color:inherit;font:inherit;cursor:pointer;text-decoration:underline dotted var(--accent2);text-underline-offset:4px}
+.lnk:hover{color:var(--accent2)}
+tr.click{cursor:pointer} tr.click:hover td{background:var(--panel2)}
+.progress{height:8px;background:var(--chip);border-radius:6px;overflow:hidden;margin:8px 0}
+.progress div{height:100%;background:var(--accent2);transition:width .2s}
+.kpis{display:grid;grid-template-columns:repeat(auto-fill,minmax(86px,1fr));gap:8px;margin:8px 0 14px}
+.kpi{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:8px;text-align:center}
+.kpi b{display:block;font-size:22px}
+.kpi span{font-size:12px;color:var(--muted)}
+.hrow{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px}
+select{background:var(--panel2);color:var(--text);border:1px solid var(--line);border-radius:10px;padding:6px 10px;font-family:inherit;font-size:15px}
+.hbtns{display:flex;gap:8px;flex-wrap:wrap}
 </style>
 </head>
 <body>
@@ -160,6 +180,7 @@ dialog::backdrop{background:rgba(0,0,0,.55)}
 </header>
 
 <main class="wrap" id="app"></main>
+<div id="sheetRoot"></div>
 
 <dialog id="help">
   <div class="help">
@@ -332,6 +353,22 @@ const ESPN = {
         pts: s.points };
     }).sort((x,y) => (x.rank??99) - (y.rank??99));
   },
+  async schedule(lg, teamId, season){
+    // الموسم الحالي يُطلب دون رقم موسم، والمواسم السابقة برقم سنة بدايتها
+    const url = `${API_SITE}${lg}/teams/${teamId}/schedule` + (season != null && season !== currentSeason() ? `?season=${season}` : '');
+    const d = await getJSON(url);
+    const events = (d.events||[]).map(e => {
+      const c = (e.competitions||[])[0] || {}; const cs = c.competitors || [];
+      const h = cs.find(x=>x.homeAway==='home') || cs[0] || {}; const a = cs.find(x=>x.homeAway==='away') || cs[1] || {};
+      const st = statusFrom(c.status || e.status); const H = teamFromComp(h), A = teamFromComp(a);
+      return { id:String(e.id), date: e.date || c.date, home:H, away:A, hs:num(H.score), as:num(A.score), state: st.state,
+        completed: (st.state==='post' || st.completed) && num(H.score)!=null && num(A.score)!=null,
+        comp: (e.league && (e.league.name || e.league.abbreviation)) || '' };
+    });
+    events.sort((x,y)=> new Date(y.date) - new Date(x.date));
+    const sn = (d.requestedSeason && d.requestedSeason.displayName) || (d.season && d.season.displayName) || '';
+    return { events, seasonName: sn };
+  },
   async summary(lg, id){
     const d = await getJSON(`${API_SITE}${lg}/summary?event=${id}`);
     const comp = (d.header && d.header.competitions && d.header.competitions[0]) || {};
@@ -359,7 +396,7 @@ const ESPN = {
     m.lineups = {home:null, away:null};
     (d.rosters || []).forEach(r => {
       const side = r.homeAway || (String(r.team && r.team.id)===m.home.id ? 'home':'away');
-      const pl = (r.roster||[]).map(p => ({ name:(p.athlete && (p.athlete.displayName||p.athlete.shortName))||'', num:p.jersey||'', pos:(p.position && p.position.abbreviation)||'',
+      const pl = (r.roster||[]).map(p => ({ id:String((p.athlete && p.athlete.id) || ''), name:(p.athlete && (p.athlete.displayName||p.athlete.shortName))||'', num:p.jersey||'', pos:(p.position && p.position.abbreviation)||'',
                 starter:!!p.starter, subIn:!!p.subbedIn, subOut:!!p.subbedOut }));
       m.lineups[side] = { formation: r.formation || '', starters: pl.filter(p=>p.starter), subs: pl.filter(p=>!p.starter) };
     });
@@ -369,7 +406,7 @@ const ESPN = {
     formSrc.forEach(f => {
       const tid = String(f.team && f.team.id); const side = tid===m.home.id ? 'home' : tid===m.away.id ? 'away' : null;
       if(!side) return;
-      m.form[side] = (f.events||[]).map(ev => ({ res: ev.gameResult, opp: arTeam(ev.opponent && (ev.opponent.displayName||ev.opponent.name)), score: ev.score || '',
+      m.form[side] = (f.events||[]).map(ev => ({ id: ev.id ? String(ev.id) : '', res: ev.gameResult, opp: arTeam(ev.opponent && (ev.opponent.displayName||ev.opponent.name)), score: ev.score || '',
           date: ev.gameDate, atVs: ev.atVs || '', comp: ev.leagueName || ev.leagueAbbreviation || '' }));
     });
     // المواجهات المباشرة
@@ -381,7 +418,7 @@ const ESPN = {
         const key = ev.id || (ev.gameDate + ev.score); if(seen.has(key)) return; seen.add(key);
         // نحسب النتيجة من منظور صاحب الأرض الحالي
         let res = ev.gameResult; if(tid && tid !== m.home.id){ res = res==='W'?'L':res==='L'?'W':res; }
-        m.h2h.push({ date: ev.gameDate, score: ev.score || '', res, venueSide: ev.atVs, comp: ev.leagueName || '',
+        m.h2h.push({ id: ev.id ? String(ev.id) : '', date: ev.gameDate, score: ev.score || '', res, venueSide: ev.atVs, comp: ev.leagueName || '',
             homeName: ev.homeTeamId ? (String(ev.homeTeamId)===m.home.id ? m.home.name : m.away.name) : '', hs: ev.homeTeamScore, as: ev.awayTeamScore });
       });
     });
@@ -405,7 +442,8 @@ function parseEvent(k){
   else if(tt.includes('kickoff') || tt.includes('kick off')) kind = 'ko';
   else if(tt.includes('end regular') || tt.includes('full time') || tt.includes('end of game')) kind = 'ft';
   if(kind==='other') return null;
-  const parts = (k.participants||[]).map(p => p.athlete && (p.athlete.displayName || p.athlete.shortName)).filter(Boolean);
+  const partObjs = (k.participants||[]).filter(p => p.athlete).map(p => ({ name: p.athlete.displayName || p.athlete.shortName || '', id: String(p.athlete.id || '') }));
+  const parts = partObjs.map(p => p.name).filter(Boolean);
   let player = parts[0] || '', player2 = parts[1] || '';
   if(kind==='sub'){
     const mm = txt.match(/\.\s*([^.]+?)\s+replaces\s+([^.]+?)(?:\.|$)/i);
@@ -413,7 +451,8 @@ function parseEvent(k){
   }
   const clockTxt = (k.clock && k.clock.displayValue) || '';
   return { id: String(k.id || (tt+clockTxt+player)), kind, minute: clockTxt, minVal: parseInt(clockTxt) || (k.clock && Math.floor((k.clock.value||0)/60)) || 0,
-    teamId: String(k.team && k.team.id || ''), player, player2, penalty: /penalty/.test(tt), header: /header/.test(tt), freekick: /free.?kick/.test(tt), text: txt };
+    teamId: String(k.team && k.team.id || ''), player, player2,
+    playerId: ((partObjs.find(p=>p.name===player)||{}).id) || '', player2Id: ((partObjs.find(p=>p.name===player2)||{}).id) || '', penalty: /penalty/.test(tt), header: /header/.test(tt), freekick: /free.?kick/.test(tt), text: txt };
 }
 
 /* =========================================================
@@ -445,12 +484,53 @@ const DEMO = (() => {
     {id:'d2', name:'الصقور', rank:5, gp:10, w:5, d:3, l:2, gf:16, ga:11, pts:18},
     {id:'d6', name:'الواحة', rank:6, gp:10, w:4, d:2, l:4, gf:12, ga:13, pts:14}
   ].map(s => ({...s, gd: s.gf - s.ga}));
+  // مباريات سابقة وهمية لتجربة «السجل الكامل»
+  const TN = {d1:'النجوم', d2:'الصقور', d3:'الوادي', d4:'الجبل', d5:'البحر', d6:'الواحة'};
+  const SQUAD = {
+    d1:['Ali Keeper','Sami Example','Khaled Sample','Majed Mid','Hassan Wing','Turki Back','Saad Back','Nasser CB','Ibrahim CB','Fahad DM','Rakan ST'],
+    d2:['Bader Keeper','Faisal Test','Omar Demo','Ziyad Mid','Mansour Wing','Adel Back','Salem Back','Hamad CB','Waleed CB','Talal DM','Mishal ST']
+  };
+  const squad = t => SQUAD[t] || Array.from({length:11}, (_,i)=> `${TN[t]==='الوادي'?'Valley':TN[t]==='الجبل'?'Mountain':TN[t]==='البحر'?'Sea':'Oasis'} Player ${i+1}`);
+  const PAST = [
+    ['dh1','2026-10-24T17:00:00Z','d1','d3',[[12,'d1','Sami Example'],[40,'d3','Valley Player 9'],[77,'d1','Rakan ST']],[[35,'d1','Fahad DM']]],
+    ['dh2','2026-10-17T17:00:00Z','d4','d1',[[22,'d1','Sami Example'],[51,'d1','Majed Mid'],[88,'d1','Sami Example']],[]],
+    ['dh3','2026-10-03T17:00:00Z','d1','d5',[[30,'d5','Sea Player 10'],[64,'d1','Rakan ST']],[[70,'d1','Sami Example']]],
+    ['dh4','2026-09-26T17:00:00Z','d6','d1',[[15,'d1','Hassan Wing'],[70,'d1','Sami Example']],[]],
+    ['dh5','2026-09-19T17:00:00Z','d1','d3',[[55,'d3','Valley Player 9']],[[60,'d1','Khaled Sample']]],
+    ['dh6','2026-09-12T17:00:00Z','d2','d5',[[33,'d2','Faisal Test'],[80,'d2','Mishal ST']],[]],
+    ['dh7','2026-03-10T17:00:00Z','d1','d2',[[20,'d2','Faisal Test'],[85,'d1','Sami Example']],[[44,'d2','Omar Demo']]],
+    ['dh8','2025-10-02T17:00:00Z','d2','d1',[[44,'d1','Rakan ST'],[60,'d1','Sami Example']],[]],
+    ['dh9','2025-02-14T17:00:00Z','d1','d2',[[71,'d2','Faisal Test']],[]]
+  ].map(([id,date,h,a,goals,yellows]) => ({id,date,h,a,goals,yellows,
+     hs:goals.filter(g=>g[1]===h).length, as:goals.filter(g=>g[1]===a).length}));
+  const tObj = id => ({id, name:TN[id], nameEn:'', logo:'', abbr:''});
+  function pastSummary(id){
+    const p = PAST.find(x=>x.id===id); if(!p) throw new Error('غير موجودة');
+    const evs = [{id:id+'k', kind:'ko', minute:"1'", minVal:1, teamId:'', player:''}]
+      .concat(p.goals.map((g,i)=>({id:id+'g'+i, kind:'goal', minute:g[0]+"'", minVal:g[0], teamId:g[1], player:g[2], playerId:''})))
+      .concat(p.yellows.map((y,i)=>({id:id+'y'+i, kind:'yellow', minute:y[0]+"'", minVal:y[0], teamId:y[1], player:y[2], playerId:''})))
+      .concat([{id:id+'f', kind:'ft', minute:"90'", minVal:95, teamId:'', player:''}])
+      .sort((x,y)=>x.minVal-y.minVal);
+    const lu = t => ({formation:'4-3-3', starters: squad(t).map((n,i)=>({id:'', name:n, num:String(i+1), pos:i===0?'GK':'', starter:true})), subs:[]});
+    return { id, lg:'demo', date:p.date, status:{state:'post', clock:"90'", detail:'FT', period:2},
+      home:{...tObj(p.h), score:String(p.hs)}, away:{...tObj(p.a), score:String(p.as)},
+      venue:'ملعب تجريبي', referee:'حكم تجريبي', events:evs,
+      stats:{home:{possessionPct:55,totalShots:12,shotsOnTarget:5,wonCorners:6}, away:{possessionPct:45,totalShots:8,shotsOnTarget:3,wonCorners:3}},
+      lineups:{home:lu(p.h), away:lu(p.a)}, form:{home:[],away:[]}, h2h:[] };
+  }
   return {
+    async schedule(lg, teamId, season){
+      const sz = season ?? currentSeason();
+      const events = PAST.filter(p => (p.h===teamId || p.a===teamId) && seasonOf(p.date)===sz).map(p => ({
+        id:p.id, date:p.date, home:tObj(p.h), away:tObj(p.a), hs:p.hs, as:p.as, state:'post', completed:true, comp:'تجريبي' }));
+      return { events: events.sort((x,y)=> new Date(y.date)-new Date(x.date)), seasonName:'' };
+    },
     start(){ t0 = Date.now(); },
     stop(){ t0 = null; },
     async scoreboard(){ return []; },
     async standings(){ return standings.map(s=>({...s})); },
-    async summary(){
+    async summary(lg, id){
+      if(id && id !== 'demo') return pastSummary(id);
       const mn = minuteNow();
       const evs = script.filter(e => e.m <= mn).map((e,i) => ({ id:'e'+i, kind:e.kind, minute: e.m+"'", minVal:e.m, teamId:e.team||'', player:e.player||'', player2:e.player2||'', penalty:!!e.penalty, header:!!e.header }));
       const hs = evs.filter(e=>e.kind==='goal' && e.teamId==='d1').length, as = evs.filter(e=>e.kind==='goal' && e.teamId==='d2').length;
@@ -470,9 +550,9 @@ const DEMO = (() => {
           home:{formation:'4-3-3', starters:['Ali Keeper','Sami Example','Khaled Sample','Majed Mid','Hassan Wing','Turki Back','Saad Back','Nasser CB','Ibrahim CB','Fahad DM','Rakan ST'].map((n,i)=>({name:n,num:String(i+1),pos:i===0?'GK':''})), subs:[{name:'Yasser New',num:'14',pos:''}]},
           away:{formation:'4-4-2', starters:['Bader Keeper','Faisal Test','Omar Demo','Ziyad Mid','Mansour Wing','Adel Back','Salem Back','Hamad CB','Waleed CB','Talal DM','Mishal ST'].map((n,i)=>({name:n,num:String(i+1),pos:i===0?'GK':''})), subs:[{name:'Nawaf Fresh',num:'19',pos:''}]}
         },
-        form:{ home:['W','W','D','W','L'].map((r,i)=>({res:r,opp:['الوادي','الجبل','البحر','الواحة','الوادي'][i],score:['2-1','3-0','1-1','2-0','0-1'][i]})),
+        form:{ home:['W','W','D','W','L'].map((r,i)=>({id:'dh'+(i+1), res:r,opp:['الوادي','الجبل','البحر','الواحة','الوادي'][i],score:['2-1','3-0','1-1','2-0','0-1'][i]})),
                away:['D','W','W','D','W'].map((r,i)=>({res:r,opp:['البحر','الواحة','الجبل','الوادي','البحر'][i],score:['1-1','2-1','1-0','0-0','3-2'][i]})) },
-        h2h:[{date:'2026-03-10',score:'1-1',res:'D',comp:'تجريبي'},{date:'2025-10-02',score:'2-0',res:'W',comp:'تجريبي'},{date:'2025-02-14',score:'0-1',res:'L',comp:'تجريبي'}]
+        h2h:[{id:'dh7',date:'2026-03-10',score:'1-1',res:'D',comp:'تجريبي'},{id:'dh8',date:'2025-10-02',score:'2-0',res:'W',comp:'تجريبي'},{id:'dh9',date:'2025-02-14',score:'0-1',res:'L',comp:'تجريبي'}]
       };
     }
   };
@@ -632,7 +712,8 @@ function buildEventSuggestion(m, ev, st, ctx){
     facts.push(...prematchFacts(m, st).slice(0,3));
   }
   if(!facts.length) return null;
-  return { id:'ev-'+ev.id, cls, icon, title, minute: ev.minute, facts };
+  const ref = side ? { lg:m.lg, team:ev.teamId, tname:T.name, pid:ev.playerId||'', pname:ev.player||'' } : null;
+  return { id:'ev-'+ev.id, cls, icon, title, minute: ev.minute, facts, ref };
 }
 function statSummary(m){
   const s = m.stats, out = [];
@@ -701,6 +782,7 @@ async function renderList(){
       <button class="btn ${S.date===tom?'on':''}" data-d="${tom}">غدًا</button>
       <input type="date" id="pick" value="${isoVal}" aria-label="اختر تاريخًا">
       <span class="spacer"></span>
+      <button class="btn"${dataAttrs({open:'teams', lg:S.lg})}>📚 سجل الفرق</button>
       <button class="btn" id="refresh">↻ تحديث</button>
     </div>
     <div id="list"><div class="empty">جارٍ تحميل مباريات ${esc(league().name)}…</div></div>
@@ -838,6 +920,7 @@ function prepHTML(m, st){
       ${h2hHTML(m)}
     </div>
     <div>
+      ${historyPanel(m)}
       ${tableHTML(m, st)}
       ${formHTML(m)}
       ${lineupsHTML(m)}
@@ -857,6 +940,7 @@ function liveHTML(m, st){
       </div>
     </div>
     <div>
+      ${historyPanel(m)}
       ${eventsHTML(m)}
       ${statsHTML(m)}
       ${lineupsHTML(m)}
@@ -868,19 +952,22 @@ function sugHTML(s){
     <div class="head"><span>${s.icon}</span><span>${esc(s.title)}</span>${s.minute?`<span class="min">${bdi(s.minute)}</span>`:''}</div>
     <ul>${s.facts.map(f=>`<li>${esc(f)}</li>`).join('')}</ul>
     <div class="foot"><span>${src}</span>${s.old?'<span>· حدث سابق</span>':''}<span class="spacer"></span>
+      ${s.ref && s.ref.pname ? `<button class="btn small"${dataAttrs({open:'player', lg:s.ref.lg, team:s.ref.team, tname:s.ref.tname, pid:s.ref.pid, pname:s.ref.pname})}>📜 سجل اللاعب</button>` : ''}
+      ${s.ref ? `<button class="btn small"${dataAttrs({open:'team', lg:s.ref.lg, team:s.ref.team, name:s.ref.tname})}>📜 سجل ${esc(s.ref.tname)}</button>` : ''}
       <button class="btn small" data-pin="${esc(s.id)}">${S.pinned.has(s.id)?'إلغاء التثبيت':'📌 تثبيت'}</button>
       <button class="btn small" data-used="${esc(s.id)}">${S.used.has(s.id)?'↺ إرجاع':'✓ استخدمتها'}</button></div></div>`;
 }
 function evIcon(k){ return {goal:'⚽',og:'⚽',yellow:'<span class="cardico" style="background:var(--yellow)"></span>',red:'<span class="cardico" style="background:var(--red)"></span>',sub:'🔁',penmiss:'❌',ht:'⏸️',ft:'🏁',ko:'🟢'}[k]||'•'; }
 function evLabel(m, e){
   const T = teamSide(m, e.teamId) ? m[teamSide(m,e.teamId)].name : '';
-  const p = e.player ? bdi(e.player) : '';
+  const pl = (name, id) => lnkPlayer(m, e.teamId, id, name);
+  const p = e.player ? pl(e.player, e.playerId) : '';
   switch(e.kind){
     case 'goal': return `هدف ${esc(T)} ${p?'— '+p:''}${e.penalty?' (ركلة جزاء)':''}`;
     case 'og': return `هدف عكسي ${p?'— '+p:''} (${esc(T)})`;
     case 'yellow': return `إنذار ${p} (${esc(T)})`;
     case 'red': return `طرد ${p} (${esc(T)})`;
-    case 'sub': return `تبديل ${esc(T)}: دخول ${p}${e.player2?' / خروج '+bdi(e.player2):''}`;
+    case 'sub': return `تبديل ${esc(T)}: دخول ${p}${e.player2?' / خروج '+pl(e.player2, e.player2Id):''}`;
     case 'penmiss': return `ركلة جزاء ضائعة ${p} (${esc(T)})`;
     case 'ht': return 'نهاية الشوط الأول';
     case 'ft': return 'نهاية المباراة';
@@ -906,7 +993,7 @@ function statsHTML(m){
 function lineupsHTML(m){
   const L = m.lineups||{}; if(!L.home && !L.away) return `<div class="panel"><h2>👕 التشكيلات</h2><p class="hint">تُعلن التشكيلات عادةً قبل المباراة بساعة تقريبًا، وستظهر هنا تلقائيًا.</p></div>`;
   const col = (side) => { const x = L[side]; if(!x) return `<div><h3>${esc(m[side].name)}</h3><p class="hint">غير متوفرة بعد</p></div>`;
-    const pl = p => `<div class="pl"><span class="n">${esc(p.num)}</span>${bdi(p.name)}${p.subIn?' 🔼':''}${p.subOut?' 🔽':''}<span class="p">${esc(p.pos)}</span></div>`;
+    const pl = p => `<div class="pl"><span class="n">${esc(p.num)}</span>${lnkPlayer(m, m[side].id, p.id, p.name)}${p.subIn?' 🔼':''}${p.subOut?' 🔽':''}<span class="p">${esc(p.pos)}</span></div>`;
     return `<div><h3>${esc(m[side].name)} ${x.formation?`<span class="hint">(${bdi(x.formation)})</span>`:''}</h3>${x.starters.map(pl).join('')}
       ${x.subs.length?`<div class="hint" style="margin-top:6px">الاحتياط</div>${x.subs.map(pl).join('')}`:''}</div>`; };
   return `<div class="panel"><h2>👕 التشكيلات</h2><div class="lineups">${col('home')}${col('away')}</div></div>`;
@@ -921,13 +1008,13 @@ function tableHTML(m, st){
 function formHTML(m){
   const one = side => { const f = m.form[side]||[]; if(!f.length) return `<p class="hint">${esc(m[side].name)}: غير متوفرة</p>`;
     return `<div style="margin-bottom:10px"><b>${esc(m[side].name)}</b> <span class="form">${f.map(x=>`<span class="${esc(x.res)}" title="${esc(resultAr(x.res)+' '+(x.score||'')+' أمام '+(x.opp||''))}">${resultLetter(x.res)}</span>`).join('')}</span>
-      <div class="hint">${f.map(x=>`${esc(resultAr(x.res))} ${bdi(x.score)} أمام ${esc(x.opp)}`).join(' · ')}</div></div>`; };
+      <div class="hint">${f.map(x=>{ const t = `${esc(resultAr(x.res))} ${bdi(x.score)} أمام ${esc(x.opp)}`; return x.id ? lnk({open:'match', lg:m.lg, id:x.id}, t) : t; }).join(' · ')}</div></div>`; };
   return `<div class="panel"><h2>📈 آخر المباريات <span class="hint">(من الأحدث)</span></h2>${one('home')}${one('away')}</div>`;
 }
 function h2hHTML(m){
   if(!m.h2h || !m.h2h.length) return `<div class="panel"><h2>🤝 المواجهات السابقة</h2><p class="hint">لا تتوفر مواجهات سابقة مسجّلة.</p></div>`;
   return `<div class="panel"><h2>🤝 المواجهات السابقة</h2><table><tr><th>التاريخ</th><th>النتيجة</th><th>${li(esc(m.home.name))}</th><th>البطولة</th></tr>
-    ${m.h2h.slice(0,10).map(g=>`<tr><td>${esc(g.date?fmtDate(g.date):'')}</td><td>${bdi(g.score)}</td><td><span class="form"><span class="${esc(g.res)}">${resultLetter(g.res)}</span></span></td><td>${bdi(g.comp)}</td></tr>`).join('')}</table></div>`;
+    ${m.h2h.slice(0,10).map(g=>`<tr${g.id?` class="click" title="اضغط لعرض تفاصيل المباراة"${dataAttrs({open:'match', lg:m.lg, id:g.id})}`:''}><td>${esc(g.date?fmtDate(g.date):'')}</td><td>${bdi(g.score)}</td><td><span class="form"><span class="${esc(g.res)}">${resultLetter(g.res)}</span></span></td><td>${bdi(g.comp)}</td></tr>`).join('')}</table></div>`;
 }
 function bindBody(m){
   const k = matchKey();
@@ -935,6 +1022,337 @@ function bindBody(m){
   document.querySelectorAll('[data-pin]').forEach(b => b.onclick = () => { const id=b.dataset.pin; S.pinned.has(id)?S.pinned.delete(id):S.pinned.add(id); store.set(k+':pin',[...S.pinned]); renderBody(); });
   document.querySelectorAll('[data-used]').forEach(b => b.onclick = () => { const id=b.dataset.used; S.used.has(id)?S.used.delete(id):S.used.add(id); store.set(k+':used',[...S.used]); renderBody(); });
 }
+
+/* =========================================================
+   السجل الكامل: مباريات الفريق موسمًا بموسم، تفاصيل أي مباراة،
+   سجل كل لاعب، وكل المواجهات بين فريقين — كلها من بيانات المصدر
+   ========================================================= */
+const HIST_SEASONS = 10;              // عدد المواسم التي يُبحث فيها عن المواجهات
+const H = { stack: [], tok: 0, sums: new Map(), scheds: new Map(), scans: new Map() };
+const provFor = lg => lg === 'demo' ? DEMO : ESPN;
+function seasonOf(date){ const d = new Date(date); if(isNaN(d)) return currentSeason(); return d.getUTCMonth() >= 6 ? d.getUTCFullYear() : d.getUTCFullYear() - 1; }
+function currentSeason(){ const d = new Date(); return d.getUTCMonth() >= 6 ? d.getUTCFullYear() : d.getUTCFullYear() - 1; }
+const seasonLabel = y => `${y}-${y+1}`;
+function dataAttrs(o){ return Object.entries(o).filter(([k,v]) => v != null && v !== '').map(([k,v]) => ` data-${k}="${esc(v)}"`).join(''); }
+const lnk = (o, html) => `<button class="lnk"${dataAttrs(o)}>${html}</button>`;
+function lnkPlayer(m, teamId, pid, name){
+  if(!name) return '';
+  if(!teamId) return bdi(name);
+  const side = teamSide(m, teamId);
+  return lnk({open:'player', lg:m.lg, team:teamId, tname: side ? m[side].name : '', pid, pname:name, season: seasonOf(m.date)}, bdi(name));
+}
+const lnkTeam = (lg, team, name, season) => lnk({open:'team', lg, team, name, season}, esc(name));
+function kpis(list){ return `<div class="kpis">${list.map(([l,v]) => `<div class="kpi"><b>${arNum(v)}</b><span>${l}</span></div>`).join('')}</div>`; }
+function progressHTML(d, n, what){ const pc = n ? Math.round(d/n*100) : 0; return `<div class="hint">جارٍ تحميل ${what||'التفاصيل'}… (${arNum(d)} من ${arNum(n)})</div><div class="progress"><div style="width:${pc}%"></div></div>`; }
+function seasonSelect(sel){
+  const c = currentSeason(); let o = '';
+  for(let y = c; y > c - HIST_SEASONS; y--) o += `<option value="${y}" ${y==sel?'selected':''}>${y===c?'الموسم الحالي ':''}${seasonLabel(y)}</option>`;
+  return `<label class="hint">الموسم: <select data-season-select>${o}</select></label>`;
+}
+function sheetSource(lg){
+  if(lg === 'demo') return `<div class="srcbox">⚠️ بيانات تجريبية وهمية.</div>`;
+  const l = LEAGUES.find(x => x.id === lg) || LEAGUES[0];
+  return `<div class="srcbox">المصدر: خدمة بيانات ${SOURCE_NAME} الرياضية — يشمل المباريات المسجّلة لدى المصدر في ${esc(l.name)}. للتحقق راجع <a href="${l.official}" target="_blank" rel="noopener">${esc(l.officialName)}</a>.</div>`;
+}
+
+/* ---------- تحميل مع ذاكرة مؤقتة ---------- */
+function saveSum(k, m){
+  try{
+    const idx = store.get('sumidx', []); idx.push(k);
+    while(idx.length > 200){ const old = idx.shift(); localStorage.removeItem('sum:'+old); }
+    localStorage.setItem('sum:'+k, JSON.stringify(m)); store.set('sumidx', idx);
+  }catch(e){ try{ store.get('sumidx', []).forEach(x => localStorage.removeItem('sum:'+x)); localStorage.removeItem('sumidx'); }catch(_){} }
+}
+function getSummary(lg, id){
+  const k = lg + ':' + id;
+  if(H.sums.has(k)) return H.sums.get(k);
+  const saved = lg !== 'demo' ? store.get('sum:'+k, null) : null;
+  if(saved){ const p = Promise.resolve(saved); H.sums.set(k, p); return p; }
+  const p = provFor(lg).summary(lg, id).then(m => { if(lg !== 'demo' && m.status && m.status.state === 'post') saveSum(k, m); return m; });
+  H.sums.set(k, p); p.catch(() => H.sums.delete(k));
+  return p;
+}
+function getSchedule(lg, team, season){
+  const k = lg + ':' + team + ':' + season;
+  if(H.scheds.has(k)) return H.scheds.get(k);
+  const p = provFor(lg).schedule(lg, team, season);
+  H.scheds.set(k, p); p.catch(() => H.scheds.delete(k));
+  return p;
+}
+async function pool(items, n, fn, onProg){
+  let i = 0, done = 0; const out = new Array(items.length);
+  async function worker(){ while(i < items.length){ const k = i++; try{ out[k] = await fn(items[k]); }catch(e){ out[k] = null; } done++; if(onProg) onProg(done, items.length); } }
+  await Promise.all(Array.from({length: Math.min(n, items.length)}, worker));
+  return out;
+}
+
+/* ---------- سجل اللاعبين داخل مباراة واحدة ---------- */
+function playerBook(){
+  const list = [];
+  const find = (id, name) => (id && list.find(x => x.id === id)) || (name && list.find(x => x.name === name && (!id || !x.id)));
+  return { list, get(id, name, extra){
+    let x = find(id, name);
+    if(!x){ x = { id: id||'', name: name||'', ...extra }; list.push(x); }
+    if(id && !x.id) x.id = id;
+    return x;
+  }};
+}
+function matchLines(m, side){
+  const tid = m[side].id, book = playerBook(), lu = m.lineups && m.lineups[side];
+  const blank = () => ({ started:false, app:false, goals:[], og:[], yellow:[], red:[], subIn:'', subOut:'' });
+  if(lu){
+    lu.starters.forEach(p => { const x = book.get(p.id, p.name, blank()); x.started = true; x.app = true; });
+    lu.subs.forEach(p => { if(p.subIn){ const x = book.get(p.id, p.name, blank()); x.app = true; } });
+  }
+  (m.events||[]).forEach(e => {
+    if(e.teamId !== tid || !e.player) return;
+    const x = book.get(e.playerId, e.player, blank());
+    if(e.kind === 'goal'){ x.goals.push(e.minute); x.app = true; }
+    else if(e.kind === 'og'){ x.og.push(e.minute); x.app = true; }
+    else if(e.kind === 'yellow'){ x.yellow.push(e.minute); x.app = true; }
+    else if(e.kind === 'red'){ x.red.push(e.minute); x.app = true; }
+    else if(e.kind === 'sub'){
+      x.subIn = e.minute; x.app = true;
+      if(e.player2){ const y = book.get(e.player2Id, e.player2, blank()); y.subOut = e.minute; }
+    }
+  });
+  return { list: book.list, hasLineup: !!(lu && lu.starters.length) };
+}
+function teamResult(e, team){
+  const home = e.home.id === team; const f = home ? e.hs : e.as, a = home ? e.as : e.hs;
+  return { f, a, r: f > a ? 'W' : f < a ? 'L' : 'D', opp: home ? e.away : e.home, home };
+}
+
+/* تحميل تفاصيل كل مباريات فريق في موسم وحساب سجل اللاعبين */
+async function scanTeam(lg, team, season, onProg){
+  const k = lg + ':' + team + ':' + season;
+  if(H.scans.has(k)) return H.scans.get(k);
+  const sch = await getSchedule(lg, team, season);
+  const played = sch.events.filter(e => e.completed);
+  const ms = await pool(played, 4, e => getSummary(lg, e.id), onProg);
+  const players = playerBook(); const games = [];
+  let noLineup = 0;
+  ms.forEach((m, i) => {
+    if(!m) return; const side = teamSide(m, team); if(!side) return;
+    const ml = matchLines(m, side); if(!ml.hasLineup) noLineup++;
+    games.push({ m, side, ml, sched: played[i] });
+    ml.list.forEach(x => {
+      const P = players.get(x.id, x.name, { apps:0, starts:0, goals:0, og:0, yellow:0, red:0 });
+      if(x.app) P.apps++; if(x.started) P.starts++;
+      P.goals += x.goals.length; P.og += x.og.length; P.yellow += x.yellow.length; P.red += x.red.length;
+    });
+  });
+  const res = { sch, games, players: players.list, failed: ms.filter(x => !x).length, noLineup, total: played.length };
+  H.scans.set(k, res);
+  return res;
+}
+
+/* ---------- اللوحة الجانبية ---------- */
+function openSheet(item){ H.stack.push(item); renderSheet(); }
+function closeSheet(){ H.stack = []; renderSheet(); }
+function backSheet(){ H.stack.pop(); renderSheet(); }
+async function renderSheet(){
+  const root = $('#sheetRoot');
+  if(!H.stack.length){ root.innerHTML = ''; return; }
+  const it = H.stack[H.stack.length - 1]; const tok = ++H.tok;
+  // تُبنى اللوحة مرة واحدة عند فتحها، ثم يتغيّر محتواها فقط عند التنقل
+  if(!root.querySelector('.sheet')) root.innerHTML = `<div class="sheet-bg" data-sheet-close></div>
+    <aside class="sheet" role="dialog" aria-modal="true" aria-labelledby="sheetTitle">
+      <div class="sheet-head" id="sheetHead"></div>
+      <div class="sheet-body" id="sheetBody"></div>
+    </aside>`;
+  $('#sheetHead').innerHTML = `${H.stack.length > 1 ? '<button class="btn small" data-sheet-back>→ رجوع</button>' : ''}
+        <h2 id="sheetTitle">${esc(it.title || 'السجل')}</h2>
+        <button class="btn small" data-sheet-close>✕ إغلاق</button>`;
+  const bodyEl = $('#sheetBody'); bodyEl.innerHTML = '<div class="empty">جارٍ التحميل…</div>'; bodyEl.scrollTop = 0;
+  const ctx = {
+    tok,
+    alive: () => tok === H.tok,
+    set: html => { if(tok === H.tok) $('#sheetBody').innerHTML = html + sheetSource(it.lg); },
+    el: id => tok === H.tok ? document.getElementById(id) : null,
+    title: t => { if(tok === H.tok){ it.title = t; $('#sheetTitle').textContent = t; } }
+  };
+  try{ await SHEETS[it.t](it, ctx); }
+  catch(e){ ctx.set(`<div class="empty"><b class="err">تعذّر تحميل البيانات من المصدر.</b><br>تأكد من الاتصال بالإنترنت.<br><span class="hint">(${esc(e.message)})</span><br><button class="btn" data-sheet-retry style="margin-top:10px">↻ إعادة المحاولة</button></div>`); }
+}
+
+const SHEETS = {
+  /* قائمة فرق الدوري */
+  async teams(it, ctx){
+    const l = LEAGUES.find(x => x.id === it.lg);
+    ctx.title('سجل الفرق — ' + (l ? l.name : ''));
+    const st = await provFor(it.lg).standings(it.lg);
+    if(!st.length){ ctx.set('<div class="empty">لا تتوفر قائمة الفرق حاليًا.</div>'); return; }
+    ctx.set(`<p class="hint">اختر فريقًا لعرض كل مبارياته موسمًا بموسم، وتفاصيل كل مباراة، وسجل كل لاعب.</p>
+      <div class="panel"><table><tr><th>#</th><th style="text-align:start">الفريق</th><th>نقاط</th></tr>
+      ${st.map(r => `<tr class="click"${dataAttrs({open:'team', lg:it.lg, team:r.id, name:r.name})}><td>${arNum(r.rank)}</td><td class="tn">${esc(r.name)}</td><td>${arNum(r.pts)}</td></tr>`).join('')}
+      </table></div>`);
+  },
+
+  /* تفاصيل مباراة كاملة */
+  async match(it, ctx){
+    const m = await getSummary(it.lg, it.id);
+    const ss = seasonOf(m.date);
+    ctx.title(`${m.home.name} × ${m.away.name}`);
+    const st = m.status || {};
+    const score = st.state === 'pre' ? '– : –' : `${esc(m.away.score)} : ${esc(m.home.score)}`;
+    ctx.set(`<div class="panel">
+        <div style="display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:8px">
+          <div class="sbteam">${m.home.logo?`<img src="${esc(m.home.logo)}" alt="">`:''}${lnkTeam(it.lg, m.home.id, m.home.name, ss)}</div>
+          <div><div class="sbscore">${score}</div><div class="sbstatus">${esc(statusAr(st, m.date))}</div></div>
+          <div class="sbteam">${m.away.logo?`<img src="${esc(m.away.logo)}" alt="">`:''}${lnkTeam(it.lg, m.away.id, m.away.name, ss)}</div>
+        </div>
+        <div class="sbinfo">${m.date?`<span>📅 ${esc(fmtDate(m.date))}</span>`:''}${m.venue?`<span>🏟️ ${esc(m.venue)}</span>`:''}${m.referee?`<span>🧑‍⚖️ الحكم: ${bdi(m.referee)}</span>`:''}${m.attendance?`<span>👥 ${arNum(m.attendance)} متفرج</span>`:''}</div>
+        <div class="hbtns" style="justify-content:center;margin-top:10px">
+          <button class="btn small"${dataAttrs({open:'h2h', lg:it.lg, a:m.home.id, b:m.away.id, an:m.home.name, bn:m.away.name})}>🤝 كل المواجهات بين الفريقين</button>
+        </div>
+      </div>
+      ${eventsHTML(m)}${statsHTML(m)}${lineupsHTML(m)}
+      <p class="hint">اضغط على اسم أي لاعب لعرض سجله، أو على اسم الفريق لعرض كل مبارياته.</p>`);
+  },
+
+  /* سجل فريق في موسم */
+  async team(it, ctx){
+    const season = it.season != null ? +it.season : currentSeason();
+    ctx.title('سجل ' + it.name);
+    const sch = await getSchedule(it.lg, it.team, season);
+    if(!ctx.alive()) return;
+    const played = sch.events.filter(e => e.completed);
+    const upcoming = sch.events.filter(e => !e.completed && e.state === 'pre').sort((a,b) => new Date(a.date) - new Date(b.date));
+    let W=0, D=0, L=0, GF=0, GA=0;
+    played.forEach(e => { const x = teamResult(e, it.team); GF += x.f; GA += x.a; x.r === 'W' ? W++ : x.r === 'D' ? D++ : L++; });
+    const row = e => { const x = teamResult(e, it.team);
+      return `<tr class="click"${dataAttrs({open:'match', lg:it.lg, id:e.id})}><td>${esc(fmtDate(e.date))}</td><td class="tn">${x.home?'🏠':'✈️'} ${esc(x.opp.name)}</td>
+        <td>${bdi(e.home.id===it.team ? `${e.hs}-${e.as}` : `${e.as}-${e.hs}`)}</td><td><span class="form"><span class="${x.r}">${resultLetter(x.r)}</span></span></td>${e.comp?`<td class="hint">${bdi(e.comp)}</td>`:'<td></td>'}</tr>`; };
+    ctx.set(`<div class="hrow">${seasonSelect(season)}${sch.seasonName?`<span class="hint">(${bdi(sch.seasonName)} حسب المصدر)</span>`:''}</div>
+      ${played.length ? kpis([['لعب',played.length],['فوز',W],['تعادل',D],['خسارة',L],['له',GF],['عليه',GA]]) : ''}
+      <div class="hbtns" style="margin-bottom:14px">
+        ${it.opp ? `<button class="btn"${dataAttrs({open:'h2h', lg:it.lg, a:it.team, b:it.opp, an:it.name, bn:it.oppname})}>🤝 كل المواجهات مع ${esc(it.oppname)}</button>` : ''}
+      </div>
+      <div class="panel"><h2>👥 اللاعبون والهدافون</h2><div id="scanBox">${played.length ? (it.scan ? progressHTML(0, played.length, 'تفاصيل المباريات') :
+        `<p class="hint">يحمّل التطبيق تفاصيل ${played.length===1?'مباراة واحدة':cnt(played.length, W_MATCH)} لحساب مشاركات وأهداف وبطاقات كل لاعب.</p><button class="btn primary" data-sheet-scan>⚽ اعرض سجل اللاعبين</button>`) : '<p class="hint">لا توجد مباريات منتهية في هذا الموسم.</p>'}</div></div>
+      <div class="panel"><h2>📅 المباريات <span class="count">${arNum(played.length)}</span></h2>
+        ${played.length ? `<div style="overflow-x:auto"><table><tr><th>التاريخ</th><th style="text-align:start">المنافس</th><th>النتيجة</th><th>ن</th><th></th></tr>${played.map(row).join('')}</table></div><p class="hint">اضغط على أي مباراة لعرض أهدافها وتشكيلتها وإحصائياتها.</p>` : `<p class="hint">لا توجد مباريات مسجّلة لهذا الفريق في هذا الموسم لدى المصدر. ربما لم يكن في هذا الدوري حينها — جرّب موسمًا آخر.</p>`}
+      </div>
+      ${upcoming.length ? `<div class="panel"><h2>🗓️ المباريات القادمة</h2>${upcoming.slice(0,5).map(e => `<div class="ev"><span>${esc(fmtDate(e.date))}</span><span>${e.home.id===it.team?'🏠':'✈️'} ${esc((e.home.id===it.team?e.away:e.home).name)}</span></div>`).join('')}</div>` : ''}`);
+    if(it.scan && played.length){
+      const r = await scanTeam(it.lg, it.team, season, (d, n) => { const b = ctx.el('scanBox'); if(b) b.innerHTML = progressHTML(d, n, 'تفاصيل المباريات'); });
+      const b = ctx.el('scanBox'); if(!b) return;
+      const ps = r.players.filter(p => p.apps || p.goals || p.yellow || p.red).sort((a,b) => b.goals - a.goals || b.apps - a.apps || a.name.localeCompare(b.name));
+      b.innerHTML = `${ps.length ? `<div style="overflow-x:auto"><table><tr><th style="text-align:start">اللاعب</th><th>مباريات</th><th>أساسي</th><th>أهداف</th><th>🟨</th><th>🟥</th></tr>
+        ${ps.map(p => `<tr class="click"${dataAttrs({open:'player', lg:it.lg, team:it.team, tname:it.name, pid:p.id, pname:p.name, season})}><td class="tn">${bdi(p.name)}</td><td>${arNum(p.apps)}</td><td>${arNum(p.starts)}</td><td><b>${arNum(p.goals)}</b></td><td>${arNum(p.yellow)}</td><td>${arNum(p.red)}</td></tr>`).join('')}</table></div>
+        <p class="hint">اضغط على أي لاعب لعرض سجله مباراة بمباراة.</p>` : '<p class="hint">لم تتوفر بيانات لاعبين لهذه المباريات لدى المصدر.</p>'}
+        ${r.failed ? `<p class="hint err">تعذّر تحميل ${arNum(r.failed)} من المباريات، فقد تكون الأرقام أقل من الحقيقة. أعد فتح الصفحة لاحقًا.</p>` : ''}
+        ${r.noLineup ? `<p class="hint">ملاحظة: ${arNum(r.noLineup)} من المباريات بلا تشكيلة لدى المصدر، فالمشاركات فيها غير محسوبة (الأهداف والبطاقات محسوبة).</p>` : ''}`;
+    }
+  },
+
+  /* سجل لاعب في موسم مع فريقه */
+  async player(it, ctx){
+    const season = it.season != null ? +it.season : currentSeason();
+    ctx.title('سجل ' + it.pname);
+    ctx.set(`<div class="hrow">${seasonSelect(season)}<span class="hint">مع ${esc(it.tname||'')}</span></div><div id="scanBox">${progressHTML(0, 1, 'مباريات الموسم')}</div>`);
+    const r = await scanTeam(it.lg, it.team, season, (d, n) => { const b = ctx.el('scanBox'); if(b) b.innerHTML = progressHTML(d, n, 'مباريات الموسم'); });
+    const b = ctx.el('scanBox'); if(!b) return;
+    const rows = []; let apps=0, starts=0, goals=0, yel=0, red=0, og=0;
+    r.games.slice().sort((a,b) => new Date(b.m.date) - new Date(a.m.date)).forEach(g => {
+      const x = (it.pid && g.ml.list.find(p => p.id === it.pid)) || g.ml.list.find(p => p.name === it.pname);
+      if(!x || !(x.app || x.goals.length || x.yellow.length || x.red.length)) return;
+      if(x.app) apps++; if(x.started) starts++; goals += x.goals.length; yel += x.yellow.length; red += x.red.length; og += x.og.length;
+      const opp = g.m[other(g.side)], my = num(g.m[g.side].score), op = num(g.m[other(g.side)].score);
+      const res = my > op ? 'W' : my < op ? 'L' : 'D';
+      const role = x.started ? (x.subOut ? `أساسي (خرج ${x.subOut})` : 'أساسي') : x.subIn ? `بديل (دخل ${x.subIn})` : (x.app ? 'شارك' : '—');
+      const cards = [...x.yellow.map(mm => '🟨 ' + mm), ...x.red.map(mm => '🟥 ' + mm)].join(' ');
+      rows.push(`<tr class="click"${dataAttrs({open:'match', lg:it.lg, id:g.m.id})}><td>${esc(fmtDate(g.m.date))}</td><td class="tn">${g.side==='home'?'🏠':'✈️'} ${esc(opp.name)}</td>
+        <td>${bdi(`${my}-${op}`)} <span class="form"><span class="${res}">${resultLetter(res)}</span></span></td><td>${bdi(role)}</td>
+        <td>${x.goals.length ? '⚽ ' + bdi(x.goals.join('، ')) : ''}${x.og.length ? ' (عكسي ' + bdi(x.og.join('، ')) + ')' : ''}</td><td>${bdi(cards)}</td></tr>`);
+    });
+    b.innerHTML = rows.length ? `${kpis([['مباريات',apps],['أساسي',starts],['بديل',Math.max(0, apps-starts)],['أهداف',goals],['إنذارات',yel],['طرد',red]])}
+      ${og ? `<p class="hint">إضافةً إلى ${arNum(og)} من الأهداف العكسية.</p>` : ''}
+      <div class="panel"><h2>📅 مباراة بمباراة</h2><div style="overflow-x:auto"><table><tr><th>التاريخ</th><th style="text-align:start">المنافس</th><th>النتيجة</th><th>المشاركة</th><th>أهداف</th><th>بطاقات</th></tr>${rows.join('')}</table></div>
+      <p class="hint">اضغط على أي مباراة لعرض تفاصيلها كاملة.</p></div>
+      ${r.noLineup ? `<p class="hint">ملاحظة: ${arNum(r.noLineup)} من مباريات الفريق بلا تشكيلة لدى المصدر، فقد لا تظهر مشاركاته فيها.</p>` : ''}
+      ${r.failed ? `<p class="hint err">تعذّر تحميل ${arNum(r.failed)} من المباريات، فقد تكون الأرقام أقل من الحقيقة.</p>` : ''}
+      <p class="hint">السجل يشمل مبارياته مع ${esc(it.tname||'الفريق')} في هذا الدوري فقط. إن انتقل من نادٍ آخر فلن تظهر مبارياته السابقة هنا.</p>`
+      : `<div class="empty">لا توجد مشاركات مسجّلة لـ${bdi(it.pname)} مع ${esc(it.tname||'الفريق')} في هذا الموسم.<br><span class="hint">جرّب موسمًا آخر من القائمة بالأعلى.</span></div>`;
+  },
+
+  /* كل المواجهات بين فريقين عبر المواسم */
+  async h2h(it, ctx){
+    ctx.title(`${it.an} × ${it.bn}`);
+    ctx.set(`<div id="scanBox">${progressHTML(0, HIST_SEASONS, 'المواسم')}</div>`);
+    const c = currentSeason(); const seasons = Array.from({length: HIST_SEASONS}, (_, i) => c - i);
+    const all = await pool(seasons, 3, s => getSchedule(it.lg, it.a, s), (d, n) => { const b = ctx.el('scanBox'); if(b) b.innerHTML = progressHTML(d, n, 'المواسم'); });
+    if(!ctx.alive()) return;
+    const seen = new Set(), games = [];
+    all.forEach(sch => { if(!sch) return; sch.events.forEach(e => {
+      if(!e.completed || seen.has(e.id)) return;
+      if(e.home.id === it.b || e.away.id === it.b){ seen.add(e.id); games.push(e); } }); });
+    games.sort((x,y) => new Date(y.date) - new Date(x.date));
+    const okSeasons = all.filter(Boolean).length;
+    if(!games.length){ ctx.set(`<div class="empty">لم أجد مواجهات بين ${esc(it.an)} و${esc(it.bn)} في آخر ${cnt(okSeasons, ['موسم','موسمين','مواسم','موسمًا'])} لدى المصدر.</div>`); return; }
+    let wa=0, wb=0, d=0, ga=0, gb=0;
+    games.forEach(e => { const x = teamResult(e, it.a); ga += x.f; gb += x.a; x.r==='W' ? wa++ : x.r==='L' ? wb++ : d++; });
+    const biggest = games.slice().sort((x,y) => Math.abs(y.hs-y.as) - Math.abs(x.hs-x.as))[0];
+    const bigWinner = biggest.hs > biggest.as ? biggest.home.name : biggest.away.name;
+    const facts = [
+      `منذ ${esc(fmtDate(games[games.length-1].date))} التقى الفريقان ${games.length===1?'مرة واحدة':games.length===2?'مرتين':cnt(games.length, ['مرة','مرتين','مرات','مرة'])} في المسابقات المسجّلة لدى المصدر.`,
+      `انتصارات ${esc(it.an)}: ${arNum(wa)}، انتصارات ${esc(it.bn)}: ${arNum(wb)}، التعادل: ${arNum(d)}.`,
+      `الأهداف: ${esc(it.an)} ${arNum(ga)} مقابل ${arNum(gb)} ${li(esc(it.bn))}.`,
+      biggest.hs !== biggest.as ? `أكبر فوز في هذه المواجهات: ${esc(bigWinner)} ${arNum(Math.max(biggest.hs,biggest.as))} - ${arNum(Math.min(biggest.hs,biggest.as))} في ${esc(fmtDate(biggest.date))}.` : ''
+    ].filter(Boolean);
+    ctx.set(`${kpis([['مواجهات',games.length],['فوز '+it.an,wa],['تعادل',d],['فوز '+it.bn,wb],['أهداف '+it.an,ga],['أهداف '+it.bn,gb]])}
+      <div class="panel"><h2>💡 نقاط جاهزة للحديث</h2><ul class="facts">${facts.map(f => `<li>${f}</li>`).join('')}</ul></div>
+      <div class="panel"><h2>⚽ هدافو المواجهات</h2><div id="scorersBox">${it.scan ? progressHTML(0, games.length, 'تفاصيل المواجهات') : `<button class="btn primary" data-sheet-scan>اعرض الهدافين (يحمّل تفاصيل ${games.length===1?'مباراة واحدة':cnt(games.length, W_MATCH)})</button>`}</div></div>
+      <div class="panel"><h2>📅 كل المواجهات</h2><div style="overflow-x:auto"><table><tr><th>التاريخ</th><th>المباراة</th><th>${li(esc(it.an))}</th><th></th></tr>
+      ${games.map(e => { const x = teamResult(e, it.a); return `<tr class="click"${dataAttrs({open:'match', lg:it.lg, id:e.id})}><td>${esc(fmtDate(e.date))}</td>
+        <td>${esc(e.home.name)} ${bdi(e.hs+'-'+e.as)} ${esc(e.away.name)}</td><td><span class="form"><span class="${x.r}">${resultLetter(x.r)}</span></span></td><td class="hint">${bdi(e.comp||'')}</td></tr>`; }).join('')}
+      </table></div><p class="hint">اضغط على أي مواجهة لعرض أهدافها وتشكيلتها. بُحث في آخر ${cnt(okSeasons, ['موسم','موسمين','مواسم','موسمًا'])} لدى المصدر.</p></div>`);
+    if(it.scan){
+      const ms = await pool(games, 4, e => getSummary(it.lg, e.id), (dn, n) => { const b = ctx.el('scorersBox'); if(b) b.innerHTML = progressHTML(dn, n, 'تفاصيل المواجهات'); });
+      const b = ctx.el('scorersBox'); if(!b) return;
+      const book = playerBook();
+      ms.forEach(m => { if(!m) return; (m.events||[]).forEach(e => { if(e.kind !== 'goal' || !e.player) return;
+        const side = teamSide(m, e.teamId); const x = book.get(e.playerId, e.player, { goals:0, team: side ? m[side].name : '', teamId: e.teamId });
+        x.goals++; }); });
+      const ps = book.list.sort((x,y) => y.goals - x.goals);
+      const failed = ms.filter(x => !x).length;
+      b.innerHTML = ps.length ? `<table><tr><th style="text-align:start">اللاعب</th><th>الفريق</th><th>أهداف</th></tr>${ps.map(p => `<tr class="click"${dataAttrs({open:'player', lg:it.lg, team:p.teamId, tname:p.team, pid:p.id, pname:p.name})}><td class="tn">${bdi(p.name)}</td><td>${esc(p.team)}</td><td><b>${arNum(p.goals)}</b></td></tr>`).join('')}</table>`
+        + (failed ? `<p class="hint err">تعذّر تحميل ${arNum(failed)} من المواجهات.</p>` : '') : '<p class="hint">لا تتوفر تفاصيل الأهداف لهذه المواجهات لدى المصدر.</p>';
+    }
+  }
+};
+
+/* لوحة «السجل الكامل» في شاشة المباراة */
+function historyPanel(m){
+  return `<div class="panel"><h2>📚 السجل الكامل</h2>
+    <div class="hbtns">
+      <button class="btn"${dataAttrs({open:'team', lg:m.lg, team:m.home.id, name:m.home.name, opp:m.away.id, oppname:m.away.name})}>📜 ${esc(m.home.name)}</button>
+      <button class="btn"${dataAttrs({open:'team', lg:m.lg, team:m.away.id, name:m.away.name, opp:m.home.id, oppname:m.home.name})}>📜 ${esc(m.away.name)}</button>
+      <button class="btn"${dataAttrs({open:'h2h', lg:m.lg, a:m.home.id, b:m.away.id, an:m.home.name, bn:m.away.name})}>🤝 كل المواجهات</button>
+    </div>
+    <p class="hint">مباريات كل فريق موسمًا بموسم، وتفاصيل أي مباراة سابقة (الأهداف والتشكيلة والإحصائيات)، وسجل كل لاعب. ويمكنك أيضًا الضغط على اسم أي لاعب في الصفحة.</p></div>`;
+}
+
+/* أحداث الضغط والتغيير داخل التطبيق */
+document.addEventListener('click', e => {
+  const t = e.target.closest('[data-open],[data-sheet-close],[data-sheet-back],[data-sheet-retry],[data-sheet-scan]');
+  if(!t) return;
+  const d = t.dataset;
+  if('sheetClose' in d){ closeSheet(); return; }
+  if('sheetBack' in d){ backSheet(); return; }
+  if('sheetRetry' in d){ renderSheet(); return; }
+  if('sheetScan' in d){ const it = H.stack[H.stack.length-1]; if(it){ it.scan = true; renderSheet(); } return; }
+  e.preventDefault();
+  const titles = { match:'تفاصيل المباراة', team:'سجل ' + (d.name||''), player:'سجل ' + (d.pname||''), h2h:'المواجهات', teams:'سجل الفرق' };
+  openSheet({ ...d, t: d.open, title: titles[d.open] || 'السجل' });
+});
+document.addEventListener('change', e => {
+  if(!e.target.matches('[data-season-select]')) return;
+  const it = H.stack[H.stack.length-1]; if(!it) return;
+  it.season = +e.target.value; it.scan = it.t === 'player'; renderSheet();
+});
+document.addEventListener('keydown', e => { if(e.key === 'Escape' && H.stack.length) closeSheet(); });
 
 /* تحديث عدّاد «آخر تحديث» كل ٥ ثوانٍ دون إعادة الرسم الكامل */
 setInterval(() => { if(S.view==='match' && S.match && S.match.home && S.match.status.state==='in') renderScorebar(); }, 5000);
